@@ -1,0 +1,1 @@
+2026-11-18T09:02:11Z INFO user=jane@example.com ip=192.168.0.1 action=charge card=4111 1111 1111 1111 result=ok ref=4111111111111112

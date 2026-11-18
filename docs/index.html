@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScrubZero — Playground</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  textarea { width: 100%; min-height: 130px; font-family: ui-monospace, monospace; }
+  pre { background: #111; color: #eee; padding: 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .tag { background: #ffe08a; color: #111; padding: 0 .3em; border-radius: 3px; font-weight: 600; }
+  button { padding: .5rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  small { color: #555; }
+</style>
+</head>
+<body>
+<h1>ScrubZero — Playground</h1>
+<p>Paste a log line, a prompt, a ticket. ScrubZero masks emails, cards
+(Luhn-checked), IBANs (mod-97), SSNs, phones, IPs, API keys and JWTs —
+<strong>entirely in your browser. Nothing is uploaded.</strong></p>
+<textarea id="in">2026-11-18 INFO user=jane@example.com ip=192.168.0.1 card=4111 1111 1111 1111 ref=4111111111111112 key=AKIAIOSFODNN7EXAMPLE ssn=123-45-6789</textarea>
+<p><button id="go">Scrub it</button> <label><input type="checkbox" id="hash"> hash replacements</label></p>
+<h2>Clean text</h2>
+<pre id="out"></pre>
+<h2>Report</h2>
+<pre id="rep"></pre>
+<p><small>Notice: <code>ref=4111111111111112</code> survives — it fails the Luhn
+checksum, so it is an order id, not a card. That discipline is the point.
+Install: <code>pip install scrubzero</code> (PyPI from Nov 23, 2026) ·
+Code: <a href="https://github.com/Yalakala-Naveen/scrubzero">github.com/Yalakala-Naveen/scrubzero</a></small></p>
+<script>
+function luhnOk(d){let t=0,a=false;for(let i=d.length-1;i>=0;i--){let n=+d[i];if(a){n*=2;if(n>9)n-=9;}t+=n;a=!a;}return t%10===0&&d.length>=13;}
+function ibanOk(v){const c=v.replace(/\s+/g,'').toUpperCase();if(c.length<15||c.length>34)return false;const r=c.slice(4)+c.slice(0,4);let num='';for(const ch of r){num+=/\d/.test(ch)?ch:(ch.charCodeAt(0)-55);}let rem=0;for(let i=0;i<num.length;i+=7){rem=parseInt(String(rem)+num.slice(i,i+7))%97;}return rem===1;}
+function ssnOk(v){const[a,g,s]=v.split('-').map(Number);return a!==0&&a!==666&&!(a>=900)&&g!==0&&s!==0;}
+function ipv4Ok(v){return v.split('.').every(p=>/^\d+$/.test(p)&&+p>=0&&+p<=255&&!(p.length>1&&p[0]==='0'));}
+const PATS=[
+ ['JWT',/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,()=>true],
+ ['API_KEY',/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,()=>true],
+ ['API_KEY',/\bgh[pousr]_[A-Za-z0-9]{36,}\b/g,()=>true],
+ ['API_KEY',/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,()=>true],
+ ['API_KEY',/\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g,()=>true],
+ ['API_KEY',/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,()=>true],
+ ['API_KEY',/\bAIza[0-9A-Za-z_-]{35}\b/g,()=>true],
+ ['EMAIL',/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,()=>true],
+ ['IBAN',/\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?\d{1,3})?\b/g,ibanOk],
+ ['CREDIT_CARD',/\b(?:\d[ -]?){12,18}\d\b/g,v=>luhnOk(v.replace(/[ -]/g,''))],
+ ['SSN',/\b\d{3}-\d{2}-\d{4}\b/g,ssnOk],
+ ['IP_ADDRESS',/\b(?:\d{1,3}\.){3}\d{1,3}\b/g,ipv4Ok],
+ ['IP_ADDRESS',/\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b/g,()=>true],
+ ['PHONE',/(?:\+?1[-.\s]?)?(?:\(\d{3}\)\s?|\d{3}[-.\s])\d{3}[-.\s]\d{4}\b/g,()=>true],
+];
+async function sha8(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('').slice(0,8);}
+async function scrubText(text,useHash){
+  let found=[];
+  for(const[entity,re,ok]of PATS){re.lastIndex=0;let m;while((m=re.exec(text))){if(ok(m[0]))found.push({entity,start:m.index,end:m.index+m[0].length,raw:m[0]});}}
+  found.sort((a,b)=>a.start-b.start||(b.end-b.start)-(a.end-a.start));
+  let chosen=[],until=-1;for(const c of found){if(c.start>=until){chosen.push(c);until=c.end;}}
+  let out='',cur=0,rep=[];
+  for(const c of chosen){const repl=useHash?`[${c.entity}:sha256:${await sha8(c.raw)}]`:`[${c.entity}]`;out+=text.slice(cur,c.start)+repl;cur=c.end;rep.push({entity:c.entity,start:c.start,end:c.end,replacement:repl});}
+  out+=text.slice(cur);
+  return{out,rep};
+}
+document.getElementById('go').addEventListener('click',async()=>{
+  const text=document.getElementById('in').value;
+  const{out,rep}=await scrubText(text,document.getElementById('hash').checked);
+  document.getElementById('out').textContent=out;
+  const counts={};rep.forEach(r=>counts[r.entity]=(counts[r.entity]||0)+1);
+  document.getElementById('rep').textContent=JSON.stringify({total:rep.length,counts,redactions:rep},null,2);
+});
+document.getElementById('go').click();
+</script>
+</body>
+</html>

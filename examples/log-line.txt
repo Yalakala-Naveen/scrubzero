@@ -1,1 +1,2 @@
 2026-11-18T09:02:11Z INFO user=jane@example.com ip=192.168.0.1 action=charge card=4111 1111 1111 1111 result=ok ref=4111111111111112
+2026-11-22T09:02:11Z INFO password=hunter2 db=postgres://app:Sup3rSecret@db.internal:5432/shop auth="Bearer abcdef1234567890ABCDEF" note=password: required

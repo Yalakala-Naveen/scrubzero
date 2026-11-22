@@ -186,9 +186,141 @@ def test_multiple_entities_one_pass():
 def test_entities_constant_matches_scope():
     assert set(ENTITIES) == {
         "EMAIL", "CREDIT_CARD", "SSN", "PHONE", "IBAN", "IP_ADDRESS", "API_KEY", "JWT",
+        "PASSWORD", "SECRET", "PRIVATE_KEY",
     }
 
 
 def test_non_string_raises():
     with pytest.raises(TypeError):
         scrub(None)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# v2 — the shapes the owner's probing exposed: passwords, tokens, DB URLs.
+# ---------------------------------------------------------------------------
+
+def test_password_assignment_bare_redacted_key_survives():
+    clean, rep = scrub("password=hunter2 retry=0")
+    assert clean == "password=[PASSWORD] retry=0"
+    assert rep.counts == {"PASSWORD": 1}
+
+
+def test_password_assignment_plain_word_redacted():
+    # A plain lowercase literal after a password key is still a password.
+    clean, rep = scrub("db password: sunshine\nnext line")
+    assert "sunshine" not in clean and rep.counts == {"PASSWORD": 1}
+
+
+def test_password_json_quoted_redacted_quotes_survive():
+    clean, rep = scrub('{"user": "app", "password": "correct horse battery"}')
+    assert "correct horse" not in clean
+    assert '"[PASSWORD]"' in clean and rep.counts == {"PASSWORD": 1}
+
+
+def test_password_prose_words_left_alone():
+    for text in ["password: required", "password: reset", "the password field is required"]:
+        clean, rep = scrub(text)
+        assert clean == text and rep.total == 0, text
+
+
+def test_password_references_and_placeholders_left_alone():
+    for text in [
+        "password=${DB_PASSWORD}",
+        "password=$DB_PASS",
+        "password=<your-password>",
+        "password=********",
+        'password: "[PASSWORD]"',
+    ]:
+        clean, rep = scrub(text)
+        assert clean == text and rep.total == 0, text
+
+
+def test_db_url_password_only_redacted():
+    url = "postgres://app:Sup3rSecret@db.internal:5432/shop"
+    clean, rep = scrub(f"connect {url} now")
+    assert "Sup3rSecret" not in clean
+    assert clean == "connect postgres://app:[PASSWORD]@db.internal:5432/shop now"
+    assert rep.counts == {"PASSWORD": 1}
+
+
+def test_db_url_variants_and_passwordless_urls():
+    clean, rep = scrub("mongodb+srv://svc:abc123XYZ@cluster0.example.net/app")
+    assert "abc123XYZ" not in clean and rep.counts == {"PASSWORD": 1}
+    for text in ["postgres://app@db.internal:5432/shop", "fetch https://example.com/docs today"]:
+        clean, rep = scrub(text)
+        assert clean == text and rep.total == 0, text
+
+
+def test_secret_assignment_bare_token_redacted():
+    clean, rep = scrub("api_key=Ab3dEf7Gh9Jk2Lm4 mode=live")
+    assert "Ab3dEf7Gh9Jk2Lm4" not in clean
+    assert clean == "api_key=[SECRET] mode=live" and rep.counts == {"SECRET": 1}
+
+
+def test_secret_assignment_quoted_redacted():
+    clean, rep = scrub('client_secret: "shh-dont-tell"')
+    assert "shh-dont-tell" not in clean and rep.counts == {"SECRET": 1}
+
+
+def test_secret_prose_guards():
+    for text in ["token: abcdefgh", "secret: the recipe", "token count is 42"]:
+        clean, rep = scrub(text)
+        assert clean == text and rep.total == 0, text
+
+
+def test_bearer_token_redacted_word_bearer_survives():
+    clean, rep = scrub("Authorization: Bearer abcdef1234567890ABCDEF")
+    assert "abcdef1234567890ABCDEF" not in clean
+    assert clean == "Authorization: Bearer [SECRET]" and rep.counts == {"SECRET": 1}
+    clean, rep = scrub("Authorization: Bearer token")
+    assert clean == "Authorization: Bearer token" and rep.total == 0
+
+
+def test_private_key_block_redacted():
+    block = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+        "-----END PRIVATE KEY-----"
+    )
+    clean, rep = scrub(f"key follows\n{block}\ndone")
+    assert "MIIEvQIBADANBg" not in clean
+    assert rep.counts == {"PRIVATE_KEY": 1}
+    assert clean == "key follows\n[PRIVATE_KEY]\ndone"
+
+
+def test_private_key_truncated_redacted():
+    text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKgwggSkAgEA"
+    clean, rep = scrub(text)
+    assert "MIIEvQIBADANBg" not in clean and rep.counts == {"PRIVATE_KEY": 1}
+
+
+def test_v2_provider_shapes():
+    samples = [
+        "github_pat_" + "A1_" * 10,
+        "sk-ant-api03-" + "B" * 24,
+        "npm_" + "C" * 36,
+        "pypi-" + "D" * 40,
+        # Built by concatenation on purpose: the literal URL in source
+        # trips GitHub push protection (it is a synthetic fixture).
+        "https://hooks.slack.com/services/" + "T00000000/B00000000/" + "X" * 24,
+    ]
+    for s in samples:
+        clean, rep = scrub(f"leaked {s} end")
+        assert rep.counts.get("API_KEY") == 1, s
+        assert s not in clean
+
+
+def test_v2_report_never_contains_raw_values():
+    text = "password=hunter2 db=postgres://app:Sup3rSecret@db.internal/shop"
+    _, rep = scrub(text)
+    blob = str(rep.to_dict())
+    for raw in ["hunter2", "Sup3rSecret"]:
+        assert raw not in blob
+    assert rep.total == 2
+
+
+def test_v2_entity_subset_filter():
+    text = "password=hunter2 mail jane@example.com"
+    clean, rep = scrub(text, entities=["PASSWORD"])
+    assert rep.counts == {"PASSWORD": 1}
+    assert "jane@example.com" in clean

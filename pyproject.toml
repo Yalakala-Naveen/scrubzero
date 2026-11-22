@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrubzero"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zero-dependency PII and secret redaction for logs, prompts and datasets — checksum-validated (Luhn, IBAN mod-97), deterministic, with a report that never re-exposes a raw value."
 readme = "README.md"
 license = { text = "MIT" }
